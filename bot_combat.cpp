@@ -1956,6 +1956,54 @@ bool BotFireWeapon(const Vector &v_enemy, bot_t *pBot, const int weapon_choice) 
 // checking whether or not the sentry they have in memory is viewable
 // from there. If so they will anticipate contact and prime a grenade,
 // and acquire the target early just before contact.
+static float BotGrenadeReleaseTime(const bot_t* pBot) {
+   const int lostHealthPercent = 100 - PlayerHealthPercent(pBot->pEdict);
+   float releaseTime = (pBot->nadeType == GRENADE_MIRV) ? 1.0f : 0.8f;
+
+   // Injured bots release earlier because they can tolerate less splash damage.
+   if (lostHealthPercent > 20)
+      releaseTime += static_cast<float>(lostHealthPercent) * 0.01f;
+
+   return releaseTime;
+}
+
+// Release both grenade buttons and keep the bot's grenade state synchronized.
+// Sending both releases is the established TFC-safe way to handle either slot.
+void BotReleasePrimedGrenade(bot_t* pBot) {
+   if (pBot == nullptr || pBot->pEdict == nullptr || !pBot->nadePrimed)
+      return;
+
+   FakeClientCommand(pBot->pEdict, "-gren1", "102", nullptr);
+   FakeClientCommand(pBot->pEdict, "-gren2", "101", nullptr);
+   pBot->nadePrimed = false;
+   pBot->nadeType = 0;
+}
+
+// Maintain an already-primed grenade even when normal combat processing stops.
+// The disposal job provides ordinary aiming when time permits; the deadline
+// merely releases the grenade in the bot's current direction before detonation.
+void BotCheckPrimedGrenade(bot_t* pBot) {
+   if (pBot == nullptr || pBot->pEdict == nullptr || !pBot->nadePrimed)
+      return;
+
+   const float timeToDet = 4.0f - (pBot->f_think_time - pBot->primeTime);
+
+   // This is the same release deadline used during normal combat.  It must not
+   // depend on bot_use_grenades: that setting may change after a grenade is live.
+   if (timeToDet <= BotGrenadeReleaseTime(pBot)) {
+      BotReleasePrimedGrenade(pBot);
+      return;
+   }
+
+   // If the target disappeared, start looking for a safe throw direction now
+   // rather than waiting until the last two seconds of the fuse.
+   if (pBot->enemy.ptr == nullptr) {
+      job_struct* newJob = InitialiseNewJob(pBot, JOB_BIN_GRENADE);
+      if (newJob != nullptr)
+         SubmitNewJob(pBot, JOB_BIN_GRENADE, newJob);
+   }
+}
+
 int BotNadeHandler(bot_t *pBot, bool timed, const char newNadeType) {
    // Lets try putting discard code in here. (dont let the engineer discard)
    if (pBot->f_discard_time < pBot->f_think_time && pBot->pEdict->v.playerclass != TFC_CLASS_ENGINEER) {
@@ -1985,14 +2033,6 @@ int BotNadeHandler(bot_t *pBot, bool timed, const char newNadeType) {
    const float timeToDet = 4.0f - (pBot->f_think_time - pBot->primeTime);
    float zDiff = 0;
 
-   // if the bot has no target to throw at try to find a place to
-   // dispose of the live grenade(anti-suicide code)
-   if (pBot->nadePrimed == true && pBot->enemy.ptr == nullptr && timeToDet <= 2.0f) {
-      job_struct *newJob = InitialiseNewJob(pBot, JOB_BIN_GRENADE);
-      if (newJob != nullptr)
-         SubmitNewJob(pBot, JOB_BIN_GRENADE, newJob);
-   }
-
    // emergency throw if the enemy has closed to self-damage range while
    // the bot is holding a live grenade - prevents suicide bomber behaviour - [APG]RoboCop[CL]
    if (pBot->nadePrimed && pBot->enemy.ptr != nullptr) {
@@ -2010,25 +2050,8 @@ int BotNadeHandler(bot_t *pBot, bool timed, const char newNadeType) {
    }
 
    // Go ahead and throw if its about to explode.
-   if (pBot->nadePrimed) {
-      const int lost_health_percent = 100 - PlayerHealthPercent(pEdict);
-      float release_time = 0.8f;
-
-      if (pBot->nadeType == GRENADE_MIRV)
-         release_time = 1.0f;
-
-      // factor in the bots state of health
-      if (lost_health_percent > 20)
-         release_time += static_cast<float>(lost_health_percent) * 0.01f;
-
-      if (timeToDet <= release_time) {
-         //	char msg[96];
-         //	std::sprintf(msg, "Tossing. release_time:%f  lost_health_percent:%d",
-         //		release_time, lost_health_percent);
-         //	UTIL_HostSay(pBot->pEdict, 0, msg);//DebugMessageOfDoom!
-         toss = true;
-      }
-   }
+   if (pBot->nadePrimed && timeToDet <= BotGrenadeReleaseTime(pBot))
+      toss = true;
 
    // Elevation check, try to throw up to ledges better.
    if (pBot->enemy.ptr) {
@@ -2071,13 +2094,9 @@ int BotNadeHandler(bot_t *pBot, bool timed, const char newNadeType) {
    }
 
    // Time to throw?
-   if (toss || pEdict->v.waterlevel == WL_HEAD_IN_WATER) {
-      // Throw the mofos!
-      FakeClientCommand(pEdict, "-gren1", "102", nullptr);
-      FakeClientCommand(pEdict, "-gren2", "101", nullptr);
+   if ((toss || pEdict->v.waterlevel == WL_HEAD_IN_WATER) && pBot->nadePrimed) {
+      BotReleasePrimedGrenade(pBot);
       rtnValue = 1;
-      pBot->nadePrimed = false;
-      pBot->nadeType = 0;
    }
 
    /*	// this code allows bots to prime grenades early when
@@ -2268,12 +2287,10 @@ int BotNadeHandler(bot_t *pBot, bool timed, const char newNadeType) {
    }
 
    // Go ahead and toss em if they aren't meant to be timed.
-   if (!timed) {
-      FakeClientCommand(pEdict, "-gren1", "102", nullptr);
-      FakeClientCommand(pEdict, "-gren2", "101", nullptr);
+   if (!timed && pBot->nadePrimed) {
       pBot->tossNade = 1;
+      BotReleasePrimedGrenade(pBot);
       rtnValue = 1;
-      pBot->nadePrimed = false;
    }
 
    return rtnValue;

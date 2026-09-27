@@ -3648,10 +3648,7 @@ int JobBinGrenade(bot_t* pBot) {
    // regardless of which phase the bot is in - [APG]RoboCop[CL]
    const float timeToDet = 4.0f - (pBot->f_think_time - pBot->primeTime);
    if (pBot->nadePrimed && timeToDet <= 0.5f) {
-      FakeClientCommand(pBot->pEdict, "-gren1", "102", nullptr);
-      FakeClientCommand(pBot->pEdict, "-gren2", "101", nullptr);
-      pBot->nadePrimed = false;
-      pBot->nadeType = 0;
+      BotReleasePrimedGrenade(pBot);
       pBot->tossNade = 1;
       pBot->f_move_speed = -pBot->f_max_speed; // back away from the throw
       job_ptr->phase = 2;
@@ -3686,6 +3683,14 @@ int JobBinGrenade(bot_t* pBot) {
 
    // phase 1 - face where to throw the grenade
    if (job_ptr->phase == 1) {
+      // The per-frame safety deadline may have released the grenade before the
+      // bot finished turning.  Stop aiming and use the ordinary retreat phase.
+      if (!pBot->nadePrimed) {
+         job_ptr->phase = 2;
+         job_ptr->phase_timer = pBot->f_think_time + 1.0f;
+         return JOB_UNDERWAY;
+      }
+
       pBot->f_side_speed = 0.0f;
       pBot->f_move_speed = 0.0f;
       BotSetFacing(pBot, job_ptr->origin);
@@ -3696,11 +3701,8 @@ int JobBinGrenade(bot_t* pBot) {
       if (BotInFieldOfView(pBot, v_aim) == 0 || timeToDet <= 1.2f) {
          // release the grenade now that we're facing the target
          if (pBot->nadePrimed) {
-            FakeClientCommand(pBot->pEdict, "-gren1", "102", nullptr);
-            FakeClientCommand(pBot->pEdict, "-gren2", "101", nullptr);
-            pBot->nadePrimed = false;
-            pBot->nadeType = 0;
             pBot->tossNade = 1;
+            BotReleasePrimedGrenade(pBot);
          }
          job_ptr->phase = 2;
          job_ptr->phase_timer = pBot->f_think_time + 1.0f;

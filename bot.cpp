@@ -3897,6 +3897,9 @@ void BotThink(bot_t* pBot) {
 	// human snipers can use their rifles as golf clubs [APG]RoboCop[CL]
 	if (botdontshoot)
 		pBot->enemy.ptr = nullptr;
+	// Blinded or deliberately stationary bots bypass normal combat processing,
+	// but must still release an already-live grenade by its safety deadline.
+	BotCheckPrimedGrenade(pBot);
 	if (botdontmove) {
 		pBot->f_move_speed = 0.0f;
 		pBot->f_side_speed = 0.0f;
@@ -3942,6 +3945,9 @@ void BotThink(bot_t* pBot) {
 
 	// these four functions essentially handle the core of bot behaviour
 	BotSenseEnvironment(pBot);
+	// Check again after enemy selection, which can clear the target immediately
+	// after a kill while the grenade still needs to be aimed away.
+	BotCheckPrimedGrenade(pBot);
 	BotFight(pBot);
 	BotJobThink(pBot);
 	BotRunJobs(pBot);
